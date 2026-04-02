@@ -26,6 +26,7 @@ IT8951ESensor = it8951e_ns.class_(
 ClearAction = it8951e_ns.class_("ClearAction", automation.Action)
 UpdateSlowAction = it8951e_ns.class_("UpdateSlowAction", automation.Action)
 DrawAction = it8951e_ns.class_("DrawAction", automation.Action)
+FillAction = it8951e_ns.class_("FillAction", automation.Action)
 
 it8951eModel = it8951e_ns.enum("it8951eModel")
 
@@ -90,6 +91,24 @@ _it8951e_action_synchronous = {"synchronous": False}
     ),
     **_it8951e_action_synchronous
 )
+
+@automation.register_action(
+    "it8951e.fill",
+    FillAction,
+    automation.maybe_simple_id(
+        {
+            cv.GenerateID(): cv.use_id(IT8951ESensor),
+        }
+    ),
+    **_it8951e_action_synchronous
+)
+async def it8951e_fill_to_code(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
+    if "color" in config:
+        cg.add(var.set_color(config["color"]))
+    return var
+
 
 async def it8951e_clear_to_code(config, action_id, template_arg, args):
     var = cg.new_Pvariable(action_id, template_arg)
