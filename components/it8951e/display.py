@@ -57,9 +57,7 @@ CONFIG_SCHEMA = cv.All(
 )
 
 # `synchronous` kwarg was added in newer ESPHome; only pass it when supported
-_it8951e_action_synchronous = {}
-if cv.Version.parse(ESPHOME_VERSION) >= cv.Version.parse("2026.3.0"):
-    _it8951e_action_synchronous["synchronous"] = True
+_it8951e_action_synchronous = {"synchronous": False}
 
 @automation.register_action(
     "it8951e.clear",
