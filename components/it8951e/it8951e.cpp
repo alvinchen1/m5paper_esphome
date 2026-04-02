@@ -4,8 +4,7 @@
 #include "esphome/core/application.h"
 #include "esphome/core/gpio.h"
 
-namespace esphome {
-namespace it8951e {
+namespace esphome::it8951e {
 
 static const char *TAG = "it8951e.display";
 
@@ -23,7 +22,7 @@ void IT8951ESensor::write_two_byte16(uint16_t type, uint16_t cmd) {
 uint16_t IT8951ESensor::read_word() {
     this->wait_busy();
     this->enable();
-    this->write_byte16(0x1000);
+    this->write_byte16(IT8951_PACKET_TYPE_READ);
     this->wait_busy();
 
     // dummy
@@ -38,49 +37,19 @@ uint16_t IT8951ESensor::read_word() {
     return word;
 }
 
-void IT8951ESensor::read_words(void *buf, uint32_t length) {
-    ExternalRAMAllocator<uint16_t> allocator(ExternalRAMAllocator<uint16_t>::ALLOW_FAILURE);
-    uint16_t *buffer = allocator.allocate(length);
-    if (buffer == nullptr) {
-        ESP_LOGE(TAG, "Read FAILED to allocate.");
-        return;
-    }
-
-    this->wait_busy();
-    this->enable();
-    this->write_byte16(0x1000);
-    this->wait_busy();
-
-    // dummy
-    this->write_byte16(0x0000);
-    this->wait_busy();
-
-    for (size_t i = 0; i < length; i++) {
-        uint8_t recv[2];
-        this->read_array(recv, sizeof(recv));
-        buffer[i] = encode_uint16(recv[0], recv[1]);
-    }
-
-    this->disable();
-
-    memcpy(buf, buffer, length * sizeof(uint16_t));
-
-    allocator.deallocate(buffer, length);
-}
-
-void IT8951ESensor:: write_command(uint16_t cmd) {
-    this->write_two_byte16(0x6000, cmd);
+void IT8951ESensor::write_command(uint16_t cmd) {
+    this->write_two_byte16(IT8951_PACKET_TYPE_CMD, cmd);
 }
 
 void IT8951ESensor::write_word(uint16_t cmd) {
-    this->write_two_byte16(0x0000, cmd);
+    this->write_two_byte16(IT8951_PACKET_TYPE_WRITE, cmd);
 }
 
 void IT8951ESensor::write_reg(uint16_t addr, uint16_t data) {
-    this->write_command(0x0011);  // tcon write reg command
+    this->write_command(IT8951_TCON_REG_WR);  // tcon write reg command
     this->wait_busy();
     this->enable();
-    this->write_byte(0x0000); // Preamble
+    this->write_byte(IT8951_PACKET_TYPE_WRITE); // Preamble
     this->wait_busy();
     this->write_byte16(addr);
     this->wait_busy();
@@ -95,9 +64,15 @@ void IT8951ESensor::set_target_memory_addr(uint16_t tar_addrL, uint16_t tar_addr
 
 void IT8951ESensor::write_args(uint16_t cmd, uint16_t *args, uint16_t length) {
     this->write_command(cmd);
+    // Batch all args in a single SPI transaction
+    this->wait_busy();
+    this->enable();
+    this->write_byte16(IT8951_PACKET_TYPE_WRITE);
+    this->wait_busy();
     for (uint16_t i = 0; i < length; i++) {
-        this->write_word(args[i]);
+        this->write_byte16(args[i]);
     }
+    this->disable();
 }
 
 void IT8951ESensor::set_area(uint16_t x, uint16_t y, uint16_t w,
@@ -135,32 +110,13 @@ void IT8951ESensor::wait_busy(uint32_t timeout) {
     }
 }
 
-void IT8951ESensor::check_busy(uint32_t timeout) {
-    const uint32_t start_time = millis();
-    while (1) {
-        this->write_command(IT8951_TCON_REG_RD);
-        this->write_word(IT8951_LUTAFSR);
-        uint16_t word = this->read_word();
-        if (word == 0) {
-            break;
-        }
-
-        if (millis() - start_time > timeout) {
-            ESP_LOGE(TAG, "SPI busy timeout %i", word);
-            break;
-        }
-
-    }
+bool IT8951ESensor::is_display_busy_() {
+    this->write_command(IT8951_TCON_REG_RD);
+    this->write_word(IT8951_LUTAFSR);
+    return this->read_word() != 0;
 }
 
-void IT8951ESensor::update_area(uint16_t x, uint16_t y, uint16_t w,
-                                     uint16_t h, update_mode_e mode) {
-    if (mode == update_mode_e::UPDATE_MODE_NONE) {
-        return;
-    }
-
-    this->check_busy();
-
+void IT8951ESensor::update_area(uint16_t x, uint16_t y, uint16_t w, uint16_t h, update_mode_e mode) {
     uint16_t args[7];
     args[0] = x;
     args[1] = y;
@@ -181,16 +137,14 @@ void IT8951ESensor::reset(void) {
     delay(100);
 }
 
-uint32_t IT8951ESensor::get_buffer_length_() { return this->get_width_internal() * this->get_height_internal(); }
-
-void IT8951ESensor::get_device_info(struct IT8951DevInfo_s *info) {
-    this->write_command(IT8951_I80_CMD_GET_DEV_INFO);
-    this->read_words(info, sizeof(struct IT8951DevInfo_s)/2); // Polling HRDY for each words(2-bytes) if possible
+uint32_t IT8951ESensor::get_buffer_length_() {
+    // 4bpp: two pixels per byte
+    return (this->get_width_internal() >> 1) * this->get_height_internal();
 }
 
 uint16_t IT8951ESensor::get_vcom() {
     this->write_command(IT8951_I80_CMD_VCOM); // tcon vcom get command
-    this->write_word(0x0000);
+    this->write_word(IT8951_I80_CMD_VCOM_READ);
     const uint16_t vcom = this->read_word();
     ESP_LOGI(TAG, "VCOM = %.02fV", (float)vcom/1000);
     return vcom;
@@ -198,7 +152,7 @@ uint16_t IT8951ESensor::get_vcom() {
 
 void IT8951ESensor::set_vcom(uint16_t vcom) {
     this->write_command(IT8951_I80_CMD_VCOM); // tcon vcom set command
-    this->write_word(0x0001);
+    this->write_word(IT8951_I80_CMD_VCOM_WRITE);
     this->write_word(vcom);
 }
 
@@ -213,8 +167,6 @@ void IT8951ESensor::setup() {
 
     this->busy_pin_->pin_mode(gpio::FLAG_INPUT | gpio::FLAG_PULLUP);
 
-    /* Not reliable, hard-coded in the model device info (same as M5Stack) */
-    //this->get_device_info(&(this->IT8951DevAll[this->model_].devInfo));
     this->dump_config();
 
     this->write_command(IT8951_TCON_SYS_RUN);
@@ -224,8 +176,8 @@ void IT8951ESensor::setup() {
 
     // set vcom to -2.30v
     const uint16_t vcom = this->get_vcom();
-    if (2300 != vcom) {
-        this->set_vcom(2300);
+    if (IT8951_DEFAULT_VCOM != vcom) {
+        this->set_vcom(IT8951_DEFAULT_VCOM);
         this->get_vcom();
     }
 
@@ -261,6 +213,14 @@ void IT8951ESensor::set_state_(EPaperState state, uint16_t delay) {
     this->delay_until_ = millis() + delay;
     this->waiting_for_idle_ = (state > EPaperState::SHOULD_WAIT);
     if (state == EPaperState::IDLE) {
+        if (this->update_pending_) {
+            this->update_pending_ = false;
+            this->pending_mode_ = this->queued_update_mode_;
+            this->update_started_at_ = millis();
+            this->update_timing_active_ = true;
+            this->state_ = EPaperState::UPDATE;
+            return;
+        }
         this->disable_loop();
     }
 }
@@ -330,31 +290,24 @@ bool IT8951ESensor::transfer_row_data_() {
     const uint16_t remaining_h = this->pending_h_ - this->transfer_row_;
     this->set_area(this->pending_x_, this->pending_y_ + this->transfer_row_, this->pending_w_, remaining_h);
     this->enable();
-    this->write_byte16(0x0000);  // data preamble
+    this->write_byte16(IT8951_PACKET_TYPE_WRITE);  // data preamble
 
+    // Full-width fast path: rows are contiguous in buffer, send in large chunks
+    const bool full_width = (this->pending_x_ == 0 && this->pending_w_ == this->usPanelW_);
     while (this->transfer_row_ < this->pending_h_) {
-        const uint16_t row_y = this->pending_y_ + this->transfer_row_;
-        const uint16_t row_bytes = this->pending_w_ >> 1;
-        const uint32_t row_index = static_cast<uint32_t>(row_y) * bytewidth + (this->pending_x_ >> 1);
-
-        if (this->reversed_) {
-            this->write_array(&this->buffer_[row_index], row_bytes);
+        if (full_width) {
+            const uint16_t remaining = this->pending_h_ - this->transfer_row_;
+            const uint16_t chunk = remaining < 50 ? remaining : 50;
+            const uint32_t offset = static_cast<uint32_t>(this->pending_y_ + this->transfer_row_) * bytewidth;
+            this->write_array(&this->buffer_[offset], static_cast<uint32_t>(chunk) * bytewidth);
+            this->transfer_row_ += chunk;
         } else {
-            uint8_t tx_buf[64];
-            uint32_t src_index = row_index;
-            uint16_t remaining = row_bytes;
-            while (remaining > 0) {
-                const uint16_t chunk = remaining > sizeof(tx_buf) ? sizeof(tx_buf) : remaining;
-                for (uint16_t i = 0; i < chunk; i++) {
-                    tx_buf[i] = 0xFF - this->buffer_[src_index + i];
-                }
-                this->write_array(tx_buf, chunk);
-                src_index += chunk;
-                remaining -= chunk;
-            }
+            const uint16_t row_y = this->pending_y_ + this->transfer_row_;
+            const uint16_t row_bytes = this->pending_w_ >> 1;
+            const uint32_t row_index = static_cast<uint32_t>(row_y) * bytewidth + (this->pending_x_ >> 1);
+            this->write_array(&this->buffer_[row_index], row_bytes);
+            this->transfer_row_++;
         }
-
-        this->transfer_row_++;
         if (millis() - start_time >= MAX_TRANSFER_TIME) {
             break;
         }
@@ -395,10 +348,19 @@ void IT8951ESensor::process_state_() {
         break;
 
     case EPaperState::REFRESH_SCREEN:
+        if (this->pending_mode_ == update_mode_e::UPDATE_MODE_NONE) {
+            this->set_state_(EPaperState::IDLE);
+            break;
+        }
+        if (this->is_display_busy_()) {
+            return;  // LUT still busy, retry next loop
+        }
+
         this->update_area(this->pending_x_, this->pending_y_, this->pending_w_, this->pending_h_, this->pending_mode_);
+
         if (this->update_timing_active_) {
             const uint32_t elapsed = millis() - this->update_started_at_;
-            ESP_LOGW(TAG, "Display update took %ums (mode=%d area=%ux%u@%u,%u)",
+            ESP_LOGD(TAG, "Display update took %ums (mode=%d area=%ux%u@%u,%u)",
                      elapsed,
                      static_cast<int>(this->pending_mode_),
                      this->pending_w_,
@@ -444,64 +406,54 @@ void IT8951ESensor::write_display(update_mode_e mode) {
  * @param init Screen initialization, If is 0, clear the buffer without initializing
  */
 void IT8951ESensor::clear(bool init) {
-    this->m_endian_type = IT8951_LDIMG_L_ENDIAN;
-    this->m_pix_bpp     = IT8951_4BPP;
-
     Display::clear();
 
-    this->set_target_memory_addr(this->IT8951DevAll[this->model_].devInfo.usImgBufAddrL, this->IT8951DevAll[this->model_].devInfo.usImgBufAddrH);
-    this->set_area(0, 0, this->get_width_internal(), this->get_height_internal());
+    if (!init || !this->initialized_)
+        return;
 
-    const uint32_t maxPos = (this->get_width_internal() * this->get_height_internal()) >> 1; // 2 pixels per byte
-
-    this->enable();
-    /* Send data preamble */
-    this->write_byte16(0x0000);
-
-    uint8_t clear_chunk[256];
-    memset(clear_chunk, 0xFF, sizeof(clear_chunk));
-    uint32_t remaining = maxPos;
-    while (remaining > 0) {
-        const uint16_t chunk = remaining > sizeof(clear_chunk) ? sizeof(clear_chunk) : remaining;
-        this->write_array(clear_chunk, chunk);
-        remaining -= chunk;
-    }
-
-    this->disable();
-
-    this->write_command(IT8951_TCON_LD_IMG_END);
-
-    if (init) {
-        const bool use_init = !this->did_init_clear_ || (this->clear_count_ % INIT_CLEAR_EVERY == 0);
-        const update_mode_e clear_mode = use_init ? update_mode_e::UPDATE_MODE_INIT
-                                                  : update_mode_e::UPDATE_MODE_GC16;
-        this->update_area(0, 0, this->get_width_internal(), this->get_height_internal(), clear_mode);
-        this->did_init_clear_ = true;
-        this->clear_count_++;
-    }
+    const bool use_init = !this->did_init_clear_ || (this->clear_count_ % INIT_CLEAR_EVERY == 0);
+    const update_mode_e clear_mode = use_init ? update_mode_e::UPDATE_MODE_INIT
+                                              : update_mode_e::UPDATE_MODE_GC16;
+    this->did_init_clear_ = true;
+    this->clear_count_++;
+    this->write_display(clear_mode);
 }
 
 void IT8951ESensor::update() {
-    if (this->is_ready() && this->initialized_ && this->state_ == EPaperState::IDLE) {
+    if (!this->is_ready() || !this->initialized_)
+        return;
+    if (this->state_ == EPaperState::IDLE) {
         this->update_started_at_ = millis();
         this->update_timing_active_ = true;
         this->pending_mode_ = update_mode_e::UPDATE_MODE_DU;
         this->enable_loop();
         this->set_state_(EPaperState::UPDATE);
+    } else {
+        this->update_pending_ = true;
+        this->queued_update_mode_ = update_mode_e::UPDATE_MODE_DU;
     }
 }
 
 void IT8951ESensor::update_slow() {
-    if (this->is_ready() && this->initialized_ && this->state_ == EPaperState::IDLE) {
+    if (!this->is_ready() || !this->initialized_)
+        return;
+    if (this->state_ == EPaperState::IDLE) {
         this->update_started_at_ = millis();
         this->update_timing_active_ = true;
         this->pending_mode_ = update_mode_e::UPDATE_MODE_GC16;
         this->enable_loop();
         this->set_state_(EPaperState::UPDATE);
+    } else {
+        this->update_pending_ = true;
+        this->queued_update_mode_ = update_mode_e::UPDATE_MODE_GC16;
     }
 }
 
 uint8_t IT8951ESensor::color_to_nibble_(const Color &color) const {
+    // Fast path for the two most common colors (avoids all arithmetic)
+    if (color.raw_32 == 0)          return 0x00;  // COLOR_OFF → white
+    if (color.raw_32 == 0xFFFFFFFF) return 0x0F;  // COLOR_ON  → black
+
     // Backward-compatible direct nibble path used by configs that set raw_32 to 0x0-0xF.
     if (color.g == 0 && color.b == 0 && color.w == 0 && color.r <= 0x0F) {
         return color.r;
@@ -521,11 +473,12 @@ uint8_t IT8951ESensor::color_to_nibble_(const Color &color) const {
 }
 
 void IT8951ESensor::fill(Color color) {
-    const uint8_t packed_color = this->color_to_nibble_(color);
-    const uint8_t fill_byte = static_cast<uint8_t>((packed_color << 4) | packed_color);
-    for (uint32_t i = 0; i < this->get_buffer_length_(); i++) {
-        this->buffer_[i] = fill_byte;
+    uint8_t packed_color = this->color_to_nibble_(color);
+    if (!this->reversed_) {
+        packed_color = 0x0F - packed_color;
     }
+    const uint8_t fill_byte = static_cast<uint8_t>((packed_color << 4) | packed_color);
+    memset(this->buffer_, fill_byte, this->get_buffer_length_());
     this->max_x = this->get_width_internal() - 1;
     this->max_y = this->get_height_internal() - 1;
     this->min_x = 0;
@@ -564,21 +517,10 @@ void HOT IT8951ESensor::draw_absolute_pixel_internal(int x, int y, Color color) 
         return;
     }
 
-    // Track min/max for partial updates
-    if (x > this->max_x) {
-        this->max_x = x;
-    }
-    if (y > this->max_y) {
-        this->max_y = y;
-    }
-    if (x < this->min_x) {
-        this->min_x = x;
-    }
-    if (y < this->min_y) {
-        this->min_y = y;
-    }
-
     uint8_t internal_color = this->color_to_nibble_(color) & 0x0F;
+    if (!this->reversed_) {
+        internal_color = 0x0F - internal_color;
+    }
     uint16_t _bytewidth = this->usPanelW_ >> 1;
 
     uint32_t index = static_cast<uint32_t>(y) * _bytewidth + (static_cast<uint32_t>(x) >> 1);
@@ -596,6 +538,20 @@ void HOT IT8951ESensor::draw_absolute_pixel_internal(int x, int y, Color color) 
         }
         // Even pixel: upper nibble
         buf = (buf & 0x0F) | (internal_color << 4);
+    }
+
+    // Track min/max for partial updates
+    if (x > this->max_x) {
+        this->max_x = x;
+    }
+    if (y > this->max_y) {
+        this->max_y = y;
+    }
+    if (x < this->min_x) {
+        this->min_x = x;
+    }
+    if (y < this->min_y) {
+        this->min_y = y;
     }
 }
 
@@ -627,9 +583,14 @@ void IT8951ESensor::dump_config() {
     ESP_LOGCONFIG(TAG,
         "  Sleep when done: %s\n"
         "  Partial Updating: %s\n"
-        "  Full Update Every: %u",
-        YESNO(this->sleep_when_done_), YESNO(this->full_update_every_ > 0), this->full_update_every_);
+        "  Full Update Every: %u\n"
+        "  Reversed colors: %s\n"
+        "  Reset duration: %ums",
+        YESNO(this->sleep_when_done_),
+        YESNO(this->full_update_every_ > 0),
+        this->full_update_every_,
+        YESNO(this->reversed_),
+        this->reset_duration_);
 }
 
-}  // namespace it8951e
-}  // namespace esphome
+}  // namespace esphome::it8951e

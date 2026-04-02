@@ -10,7 +10,6 @@ from esphome.const import (
     CONF_RESET_PIN,
     CONF_RESET_DURATION,
     CONF_BUSY_PIN,
-    CONF_PAGES,
     CONF_LAMBDA,
     CONF_MODEL,
     CONF_REVERSED,
@@ -42,7 +41,7 @@ CONFIG_SCHEMA = cv.All(
             cv.Required(CONF_RESET_PIN): pins.gpio_output_pin_schema,
             cv.Required(CONF_BUSY_PIN): pins.gpio_input_pin_schema,
             cv.Optional(CONF_REVERSED): cv.boolean,
-            cv.Optional(CONF_RESET_DURATION): cv.All(
+            cv.Optional(CONF_RESET_DURATION, default="20ms"): cv.All(
                 cv.positive_time_period_milliseconds,
                 cv.Range(max=core.TimePeriod(milliseconds=500)),
             ),
@@ -57,6 +56,11 @@ CONFIG_SCHEMA = cv.All(
     .extend(spi.spi_device_schema()),
 )
 
+# `synchronous` kwarg was added in newer ESPHome; only pass it when supported
+_it8951e_action_synchronous = {}
+if cv.Version.parse(ESPHOME_VERSION) >= cv.Version.parse("2026.3.0"):
+    _it8951e_action_synchronous["synchronous"] = True
+
 @automation.register_action(
     "it8951e.clear",
     ClearAction,
@@ -65,6 +69,7 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.use_id(IT8951ESensor),
         }
     ),
+    **_it8951e_action_synchronous
 )
 @automation.register_action(
     "it8951e.updateslow",
@@ -74,7 +79,9 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.use_id(IT8951ESensor),
         }
     ),
+    **_it8951e_action_synchronous
 )
+
 @automation.register_action(
     "it8951e.draw",
     DrawAction,
@@ -83,6 +90,7 @@ CONFIG_SCHEMA = cv.All(
             cv.GenerateID(): cv.use_id(IT8951ESensor),
         }
     ),
+    **_it8951e_action_synchronous
 )
 
 async def it8951e_clear_to_code(config, action_id, template_arg, args):

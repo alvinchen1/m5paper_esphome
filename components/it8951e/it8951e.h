@@ -5,8 +5,7 @@
 #include "esphome/components/spi/spi.h"
 #include "esphome/components/display/display_buffer.h"
 
-namespace esphome {
-namespace it8951e {
+namespace esphome::it8951e {
 
 enum class EPaperState : uint8_t {
   IDLE,       // not doing anything
@@ -23,7 +22,7 @@ enum class EPaperState : uint8_t {
   DEEP_SLEEP,      // deep sleep the display
 };
 
-static constexpr uint32_t MAX_TRANSFER_TIME = 25;  // Transfer in 25ms blocks to allow the loop to run
+static constexpr uint32_t MAX_TRANSFER_TIME = 10;  // Transfer in 10ms blocks to allow the loop to run
 
 enum it8951eModel
 {
@@ -39,10 +38,7 @@ class IT8951ESensor : public PollingComponent, public display::DisplayBuffer,
                       public spi::SPIDevice<spi::BIT_ORDER_MSB_FIRST, spi::CLOCK_POLARITY_LOW, spi::CLOCK_PHASE_LEADING,
                                             spi::DATA_RATE_20MHZ> {
  public:
-  // float get_loop_priority() const override { return 0.0f; };
-// 3/19/2026.  Added for 2026.3.0 compile errors
-  float get_loop_priority() const { return 0.0f; }
-float get_setup_priority() const override { return setup_priority::PROCESSOR; };
+  float get_setup_priority() const override { return setup_priority::PROCESSOR; };
 
 /*
 ---------------------------------------- Refresh mode description
@@ -188,8 +184,6 @@ shown in Figure 1. The use of a white image in the transition from 4-bit to
     display::DisplayType::DISPLAY_TYPE_GRAYSCALE // .displayType (M5EPD supports 16 gray scale levels)
   };
 
-  void get_device_info(struct IT8951DevInfo_s *info);
-
   int max_x = 0;
   int max_y = 0;
   int min_x = 960;
@@ -222,7 +216,6 @@ shown in Figure 1. The use of a white image in the transition from 4-bit to
 
   // comes from ref driver code from waveshare
   uint16_t read_word();
-  void read_words(void *buf, uint32_t length);
 
   void write_two_byte16(uint16_t type, uint16_t cmd);
   void write_command(uint16_t cmd);
@@ -242,6 +235,7 @@ shown in Figure 1. The use of a white image in the transition from 4-bit to
   bool is_idle_() const;
   bool prepare_transfer_(update_mode_e &mode);
   bool transfer_row_data_();
+  bool is_display_busy_();
   uint8_t color_to_nibble_(const Color &color) const;
 
   EPaperState state_{EPaperState::IDLE};
@@ -261,6 +255,8 @@ shown in Figure 1. The use of a white image in the transition from 4-bit to
   bool did_init_clear_{false};
   uint32_t clear_count_{0};
   static constexpr uint32_t INIT_CLEAR_EVERY = 12;
+  bool update_pending_{false};
+  update_mode_e queued_update_mode_{update_mode_e::UPDATE_MODE_NONE};
 };
 
 template<typename... Ts> class ClearAction : public Action<Ts...>, public Parented<IT8951ESensor> {
@@ -278,5 +274,4 @@ template<typename... Ts> class DrawAction : public Action<Ts...>, public Parente
   void play(const Ts &... x) override { this->parent_->write_display(IT8951ESensor::UPDATE_MODE_DU); }
 };
 
-}  // namespace it8951e
-}  // namespace esphome
+}  // namespace esphome::it8951e
