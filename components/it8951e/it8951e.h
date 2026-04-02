@@ -275,5 +275,3 @@ template<typename... Ts> class DrawAction : public Action<Ts...>, public Parente
 };
 
 }  // namespace esphome::it8951e
-
-#include "it8951e_fill_action.h"
